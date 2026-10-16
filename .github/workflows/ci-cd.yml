@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build:
-    name: Build ve test
+    name: Build & test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +27,7 @@ jobs:
       - name: Publish
         run: dotnet publish src/MiniObilet.Api -c Release --no-build -o publish
 
-      - name: Idempotent migration script'i (inceleme için)
+      - name: Idempotent migration script (for review)
         run: |
           dotnet tool restore
           dotnet ef migrations script --idempotent --project src/MiniObilet.Api --configuration Release --no-build --output migrations.sql
@@ -43,7 +43,7 @@ jobs:
           path: migrations.sql
 
   deploy:
-    name: Azure'a deploy
+    name: Deploy to Azure
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -51,7 +51,7 @@ jobs:
       name: production
       url: ${{ steps.deploy.outputs.webapp-url }}
     permissions:
-      id-token: write   # OIDC: Azure'a şifre saklamadan giriş
+      id-token: write   # OIDC: sign in to Azure without stored credentials
       contents: read
     steps:
       - uses: actions/download-artifact@v4
@@ -59,14 +59,14 @@ jobs:
           name: api
           path: publish
 
-      - name: Azure'a giriş (OIDC, federated credential)
+      - name: Azure login (OIDC, federated credential)
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      - name: App Service'e deploy
+      - name: Deploy to App Service
         id: deploy
         uses: azure/webapps-deploy@v3
         with:
@@ -77,10 +77,10 @@ jobs:
         run: |
           url="${{ steps.deploy.outputs.webapp-url }}/health"
           for i in $(seq 1 20); do
-            kod=$(curl -s -o /dev/null -w "%{http_code}" "$url" || true)
-            echo "Deneme $i: $kod"
-            if [ "$kod" = "200" ]; then exit 0; fi
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$url" || true)
+            echo "Attempt $i: $code"
+            if [ "$code" = "200" ]; then exit 0; fi
             sleep 15
           done
-          echo "Uygulama sağlıklı cevap vermedi"
+          echo "The app did not report healthy"
           exit 1

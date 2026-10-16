@@ -4,83 +4,85 @@ using MiniObilet.Api.Data;
 
 namespace MiniObilet.Api;
 
-public record SeferOzetDto(int Id, string Firma, string Kalkis, string Varis, DateTime KalkisZamani, decimal Fiyat, int BosKoltuk);
-public record KoltukDto(int No, bool Dolu);
-public record KoltukHaritasiDto(int SeferId, IReadOnlyList<KoltukDto> Koltuklar);
-public record BiletIstegi(int SeferId, int KoltukNo, string YolcuAdi, string Eposta);
-public record BiletDto(string Pnr, int SeferId, int KoltukNo, string YolcuAdi, string Kalkis, string Varis, DateTime KalkisZamani, decimal Fiyat, bool Iptal);
+public record TripSummaryDto(int Id, string Company, string Origin, string Destination, DateTime DepartureTime, decimal Price, int AvailableSeats);
+public record SeatDto(int Number, bool IsTaken);
+public record SeatMapDto(int TripId, IReadOnlyList<SeatDto> Seats);
+public record TicketRequest(int TripId, int SeatNumber, string PassengerName, string Email);
+public record TicketDto(string Pnr, int TripId, int SeatNumber, string PassengerName, string Origin, string Destination, DateTime DepartureTime, decimal Price, bool IsCancelled);
 
 public static class Endpoints
 {
-    public static void MapMiniObilet(this WebApplication app)
+    private const string PnrAlphabet = "ABCDEFGHJKLMNPRSTUVYZ23456789";
+
+    public static void MapMiniObiletApi(this WebApplication app)
     {
         var api = app.MapGroup("/api/v1");
 
-        api.MapGet("/seferler", SeferAra);
-        api.MapGet("/seferler/{id:int}/koltuklar", KoltukHaritasi);
-        api.MapPost("/biletler", BiletAl);
-        api.MapGet("/biletler/{pnr}", BiletGetir);
-        api.MapDelete("/biletler/{pnr}", BiletIptal);
+        api.MapGet("/trips", SearchTrips);
+        api.MapGet("/trips/{id:int}/seats", GetSeatMap);
+        api.MapPost("/tickets", BuyTicket);
+        api.MapGet("/tickets/{pnr}", GetTicket);
+        api.MapDelete("/tickets/{pnr}", CancelTicket);
     }
 
-    static async Task<IResult> SeferAra(string? kalkis, string? varis, DateOnly? tarih, AppDbContext db, CancellationToken ct)
+    static async Task<IResult> SearchTrips(string? origin, string? destination, DateOnly? date, AppDbContext db, CancellationToken ct)
     {
-        var hatalar = new Dictionary<string, string[]>();
-        if (string.IsNullOrWhiteSpace(kalkis)) hatalar["kalkis"] = ["Kalkış şehri zorunlu."];
-        if (string.IsNullOrWhiteSpace(varis)) hatalar["varis"] = ["Varış şehri zorunlu."];
-        if (tarih is null) hatalar["tarih"] = ["Tarih zorunlu (yyyy-MM-dd)."];
-        if (hatalar.Count > 0) return Results.ValidationProblem(hatalar);
+        var errors = new Dictionary<string, string[]>();
+        if (string.IsNullOrWhiteSpace(origin)) errors["origin"] = ["Origin is required."];
+        if (string.IsNullOrWhiteSpace(destination)) errors["destination"] = ["Destination is required."];
+        if (date is null) errors["date"] = ["Date is required (yyyy-MM-dd)."];
+        if (errors.Count > 0) return Results.ValidationProblem(errors);
 
-        var baslangic = tarih!.Value.ToDateTime(TimeOnly.MinValue);
-        var bitis = baslangic.AddDays(1);
+        var from = date!.Value.ToDateTime(TimeOnly.MinValue);
+        var to = from.AddDays(1);
 
-        var seferler = await db.Seferler.AsNoTracking()
-            .Where(s => s.Kalkis == kalkis && s.Varis == varis && s.KalkisZamani >= baslangic && s.KalkisZamani < bitis)
-            .OrderBy(s => s.KalkisZamani)
-            .Select(s => new SeferOzetDto(s.Id, s.Firma, s.Kalkis, s.Varis, s.KalkisZamani, s.Fiyat,
-                s.KoltukSayisi - s.Biletler.Count(b => !b.Iptal)))
+        var trips = await db.Trips.AsNoTracking()
+            .Where(t => t.Origin == origin && t.Destination == destination && t.DepartureTime >= from && t.DepartureTime < to)
+            .OrderBy(t => t.DepartureTime)
+            .Select(t => new TripSummaryDto(t.Id, t.Company, t.Origin, t.Destination, t.DepartureTime, t.Price,
+                t.SeatCount - t.Tickets.Count(x => !x.IsCancelled)))
             .ToListAsync(ct);
 
-        return Results.Ok(seferler);
+        return Results.Ok(trips);
     }
 
-    static async Task<IResult> KoltukHaritasi(int id, AppDbContext db, CancellationToken ct)
+    static async Task<IResult> GetSeatMap(int id, AppDbContext db, CancellationToken ct)
     {
-        var sefer = await db.Seferler.AsNoTracking()
-            .Where(s => s.Id == id)
-            .Select(s => new { s.KoltukSayisi, Dolu = s.Biletler.Where(b => !b.Iptal).Select(b => b.KoltukNo).ToList() })
+        var trip = await db.Trips.AsNoTracking()
+            .Where(t => t.Id == id)
+            .Select(t => new { t.SeatCount, Taken = t.Tickets.Where(x => !x.IsCancelled).Select(x => x.SeatNumber).ToList() })
             .FirstOrDefaultAsync(ct);
-        if (sefer is null) return Results.NotFound();
+        if (trip is null) return Results.NotFound();
 
-        var dolu = sefer.Dolu.ToHashSet();
-        var koltuklar = Enumerable.Range(1, sefer.KoltukSayisi).Select(no => new KoltukDto(no, dolu.Contains(no))).ToList();
-        return Results.Ok(new KoltukHaritasiDto(id, koltuklar));
+        var taken = trip.Taken.ToHashSet();
+        var seats = Enumerable.Range(1, trip.SeatCount).Select(n => new SeatDto(n, taken.Contains(n))).ToList();
+        return Results.Ok(new SeatMapDto(id, seats));
     }
 
-    static async Task<IResult> BiletAl(BiletIstegi istek, AppDbContext db, ILogger<Program> logger, CancellationToken ct)
+    static async Task<IResult> BuyTicket(TicketRequest request, AppDbContext db, ILogger<Program> logger, CancellationToken ct)
     {
-        var hatalar = new Dictionary<string, string[]>();
-        if (string.IsNullOrWhiteSpace(istek.YolcuAdi)) hatalar["yolcuAdi"] = ["Yolcu adı zorunlu."];
-        if (string.IsNullOrWhiteSpace(istek.Eposta) || !istek.Eposta.Contains('@')) hatalar["eposta"] = ["Geçerli bir e-posta girin."];
-        if (hatalar.Count > 0) return Results.ValidationProblem(hatalar);
+        var errors = new Dictionary<string, string[]>();
+        if (string.IsNullOrWhiteSpace(request.PassengerName)) errors["passengerName"] = ["Passenger name is required."];
+        if (string.IsNullOrWhiteSpace(request.Email) || !request.Email.Contains('@')) errors["email"] = ["A valid email is required."];
+        if (errors.Count > 0) return Results.ValidationProblem(errors);
 
-        var sefer = await db.Seferler.AsNoTracking().FirstOrDefaultAsync(s => s.Id == istek.SeferId, ct);
-        if (sefer is null) return Results.NotFound();
-        if (istek.KoltukNo < 1 || istek.KoltukNo > sefer.KoltukSayisi)
-            return Results.ValidationProblem(new Dictionary<string, string[]> { ["koltukNo"] = [$"Koltuk 1 ile {sefer.KoltukSayisi} arasında olmalı."] });
+        var trip = await db.Trips.AsNoTracking().FirstOrDefaultAsync(t => t.Id == request.TripId, ct);
+        if (trip is null) return Results.NotFound();
+        if (request.SeatNumber < 1 || request.SeatNumber > trip.SeatCount)
+            return Results.ValidationProblem(new Dictionary<string, string[]> { ["seatNumber"] = [$"Seat must be between 1 and {trip.SeatCount}."] });
 
-        if (await KoltukDoluMu(db, istek, ct)) return KoltukDolu(istek.KoltukNo);
+        if (await IsSeatTakenAsync(db, request, ct)) return SeatTaken(request.SeatNumber);
 
-        var bilet = new Bilet
+        var ticket = new Ticket
         {
-            Pnr = RandomNumberGenerator.GetString("ABCDEFGHJKLMNPRSTUVYZ23456789", 6),
-            SeferId = istek.SeferId,
-            KoltukNo = istek.KoltukNo,
-            YolcuAdi = istek.YolcuAdi.Trim(),
-            Eposta = istek.Eposta.Trim().ToLowerInvariant(),
-            OlusturmaZamani = DateTime.UtcNow
+            Pnr = RandomNumberGenerator.GetString(PnrAlphabet, 6),
+            TripId = request.TripId,
+            SeatNumber = request.SeatNumber,
+            PassengerName = request.PassengerName.Trim(),
+            Email = request.Email.Trim().ToLowerInvariant(),
+            CreatedAt = DateTime.UtcNow
         };
-        db.Biletler.Add(bilet);
+        db.Tickets.Add(ticket);
 
         try
         {
@@ -88,54 +90,54 @@ public static class Endpoints
         }
         catch (DbUpdateException)
         {
-            // Kontrolden sonra başka bir istek aynı koltuğu aldıysa unique index ikinci kaydı reddeder
+            // Another request took the seat after our check; the unique index rejected this insert
             db.ChangeTracker.Clear();
-            if (await KoltukDoluMu(db, istek, ct))
+            if (await IsSeatTakenAsync(db, request, ct))
             {
-                logger.LogInformation("Eşzamanlı satış engellendi {SeferId} koltuk {KoltukNo}", istek.SeferId, istek.KoltukNo);
-                return KoltukDolu(istek.KoltukNo);
+                logger.LogInformation("Concurrent sale blocked {TripId} seat {SeatNumber}", request.TripId, request.SeatNumber);
+                return SeatTaken(request.SeatNumber);
             }
             throw;
         }
 
-        logger.LogInformation("Bilet satıldı {Pnr} {SeferId} koltuk {KoltukNo}", bilet.Pnr, bilet.SeferId, bilet.KoltukNo);
-        return Results.Created($"/api/v1/biletler/{bilet.Pnr}", ToDto(bilet, sefer));
+        logger.LogInformation("Ticket sold {Pnr} {TripId} seat {SeatNumber}", ticket.Pnr, ticket.TripId, ticket.SeatNumber);
+        return Results.Created($"/api/v1/tickets/{ticket.Pnr}", ToDto(ticket, trip));
     }
 
-    // PNR tek başına yetmez: e-posta da eşleşmeli (başkasının biletine erişimi önler)
-    static async Task<IResult> BiletGetir(string pnr, string? eposta, AppDbContext db, CancellationToken ct)
+    // PNR alone is not enough: the email must match too (prevents IDOR)
+    static async Task<IResult> GetTicket(string pnr, string? email, AppDbContext db, CancellationToken ct)
     {
-        var bilet = await BulAsync(db, pnr, eposta, ct, takip: false);
-        return bilet is null ? Results.NotFound() : Results.Ok(ToDto(bilet, bilet.Sefer!));
+        var ticket = await FindTicketAsync(db, pnr, email, tracked: false, ct);
+        return ticket is null ? Results.NotFound() : Results.Ok(ToDto(ticket, ticket.Trip!));
     }
 
-    static async Task<IResult> BiletIptal(string pnr, string? eposta, AppDbContext db, CancellationToken ct)
+    static async Task<IResult> CancelTicket(string pnr, string? email, AppDbContext db, CancellationToken ct)
     {
-        var bilet = await BulAsync(db, pnr, eposta, ct, takip: true);
-        if (bilet is null) return Results.NotFound();
-        if (!bilet.Iptal)
+        var ticket = await FindTicketAsync(db, pnr, email, tracked: true, ct);
+        if (ticket is null) return Results.NotFound();
+        if (!ticket.IsCancelled)
         {
-            bilet.Iptal = true;
+            ticket.IsCancelled = true;
             await db.SaveChangesAsync(ct);
         }
         return Results.NoContent();
     }
 
-    static Task<bool> KoltukDoluMu(AppDbContext db, BiletIstegi istek, CancellationToken ct) =>
-        db.Biletler.AnyAsync(b => b.SeferId == istek.SeferId && b.KoltukNo == istek.KoltukNo && !b.Iptal, ct);
+    static Task<bool> IsSeatTakenAsync(AppDbContext db, TicketRequest request, CancellationToken ct) =>
+        db.Tickets.AnyAsync(t => t.TripId == request.TripId && t.SeatNumber == request.SeatNumber && !t.IsCancelled, ct);
 
-    static IResult KoltukDolu(int koltukNo) =>
-        Results.Problem(title: "Koltuk dolu", detail: $"{koltukNo} numaralı koltuk az önce satıldı.", statusCode: StatusCodes.Status409Conflict);
+    static IResult SeatTaken(int seatNumber) =>
+        Results.Problem(title: "Seat taken", detail: $"Seat {seatNumber} has just been sold.", statusCode: StatusCodes.Status409Conflict);
 
-    static Task<Bilet?> BulAsync(AppDbContext db, string pnr, string? eposta, CancellationToken ct, bool takip)
+    static Task<Ticket?> FindTicketAsync(AppDbContext db, string pnr, string? email, bool tracked, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(eposta)) return Task.FromResult<Bilet?>(null);
-        var sorgu = takip ? db.Biletler : db.Biletler.AsNoTracking();
-        var normal = eposta.Trim().ToLowerInvariant();
-        return sorgu.Include(b => b.Sefer)
-            .FirstOrDefaultAsync(b => b.Pnr == pnr.ToUpperInvariant() && b.Eposta == normal, ct);
+        if (string.IsNullOrWhiteSpace(email)) return Task.FromResult<Ticket?>(null);
+        var query = tracked ? db.Tickets : db.Tickets.AsNoTracking();
+        var normalizedEmail = email.Trim().ToLowerInvariant();
+        return query.Include(t => t.Trip)
+            .FirstOrDefaultAsync(t => t.Pnr == pnr.ToUpperInvariant() && t.Email == normalizedEmail, ct);
     }
 
-    static BiletDto ToDto(Bilet b, Sefer s) =>
-        new(b.Pnr, b.SeferId, b.KoltukNo, b.YolcuAdi, s.Kalkis, s.Varis, s.KalkisZamani, s.Fiyat, b.Iptal);
+    static TicketDto ToDto(Ticket t, Trip trip) =>
+        new(t.Pnr, t.TripId, t.SeatNumber, t.PassengerName, trip.Origin, trip.Destination, trip.DepartureTime, trip.Price, t.IsCancelled);
 }

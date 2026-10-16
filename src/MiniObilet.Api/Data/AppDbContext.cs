@@ -3,63 +3,62 @@ using Microsoft.EntityFrameworkCore.Design;
 
 namespace MiniObilet.Api.Data;
 
-public class Sefer
+public class Trip
 {
     public int Id { get; set; }
-    public required string Firma { get; set; }
-    public required string Kalkis { get; set; }
-    public required string Varis { get; set; }
-    public DateTime KalkisZamani { get; set; }
-    public decimal Fiyat { get; set; }
-    public int KoltukSayisi { get; set; }
-    public List<Bilet> Biletler { get; set; } = [];
+    public required string Company { get; set; }
+    public required string Origin { get; set; }
+    public required string Destination { get; set; }
+    public DateTime DepartureTime { get; set; }
+    public decimal Price { get; set; }
+    public int SeatCount { get; set; }
+    public List<Ticket> Tickets { get; set; } = [];
 }
 
-public class Bilet
+public class Ticket
 {
     public int Id { get; set; }
     public required string Pnr { get; set; }
-    public int SeferId { get; set; }
-    public Sefer? Sefer { get; set; }
-    public int KoltukNo { get; set; }
-    public required string YolcuAdi { get; set; }
-    public required string Eposta { get; set; }
-    public bool Iptal { get; set; }
-    public DateTime OlusturmaZamani { get; set; }
+    public int TripId { get; set; }
+    public Trip? Trip { get; set; }
+    public int SeatNumber { get; set; }
+    public required string PassengerName { get; set; }
+    public required string Email { get; set; }
+    public bool IsCancelled { get; set; }
+    public DateTime CreatedAt { get; set; }
 }
 
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options)
 {
-    public DbSet<Sefer> Seferler => Set<Sefer>();
-    public DbSet<Bilet> Biletler => Set<Bilet>();
+    public DbSet<Trip> Trips => Set<Trip>();
+    public DbSet<Ticket> Tickets => Set<Ticket>();
 
     protected override void OnModelCreating(ModelBuilder model)
     {
-        model.Entity<Sefer>(e =>
+        model.Entity<Trip>(e =>
         {
-            e.Property(s => s.Firma).HasMaxLength(100);
-            e.Property(s => s.Kalkis).HasMaxLength(50);
-            e.Property(s => s.Varis).HasMaxLength(50);
-            e.Property(s => s.Fiyat).HasPrecision(10, 2);
-            e.HasIndex(s => new { s.Kalkis, s.Varis, s.KalkisZamani });
+            e.Property(t => t.Company).HasMaxLength(100);
+            e.Property(t => t.Origin).HasMaxLength(50);
+            e.Property(t => t.Destination).HasMaxLength(50);
+            e.Property(t => t.Price).HasPrecision(10, 2);
+            e.HasIndex(t => new { t.Origin, t.Destination, t.DepartureTime });
         });
 
-        model.Entity<Bilet>(e =>
+        model.Entity<Ticket>(e =>
         {
-            e.Property(b => b.Pnr).HasMaxLength(6);
-            e.Property(b => b.YolcuAdi).HasMaxLength(100);
-            e.Property(b => b.Eposta).HasMaxLength(200);
-            e.HasIndex(b => b.Pnr).IsUnique();
+            e.Property(t => t.Pnr).HasMaxLength(6);
+            e.Property(t => t.PassengerName).HasMaxLength(100);
+            e.Property(t => t.Email).HasMaxLength(200);
+            e.HasIndex(t => t.Pnr).IsUnique();
 
-            // Çift satışa karşı son güvence: iptal edilmemiş biletlerde aynı sefer + koltuk tek olabilir
-            e.HasIndex(b => new { b.SeferId, b.KoltukNo })
+            // Double-booking guard: one active ticket per trip and seat
+            e.HasIndex(t => new { t.TripId, t.SeatNumber })
                 .IsUnique()
-                .HasFilter("[Iptal] = 0");
+                .HasFilter("[IsCancelled] = 0");
         });
     }
 }
 
-// dotnet ef migrations add için (SQL Server migration'ları üretir, bağlantı açmaz)
 public class DesignTimeFactory : IDesignTimeDbContextFactory<AppDbContext>
 {
     public AppDbContext CreateDbContext(string[] args) =>

@@ -4,7 +4,7 @@ namespace MiniObilet.Api.Data;
 
 public static class SeedData
 {
-    private static readonly (string Kalkis, string Varis, string Firma, int Saat, decimal Fiyat)[] Hatlar =
+    private static readonly (string Origin, string Destination, string Company, int Hour, decimal Price)[] Routes =
     [
         ("İstanbul", "Ankara", "Anadolu Turizm", 9, 750),
         ("İstanbul", "Ankara", "Boğaziçi Seyahat", 14, 690),
@@ -15,21 +15,21 @@ public static class SeedData
         ("İstanbul", "İzmir", "Ege Ekspres", 21, 950)
     ];
 
-    public static async Task YukleAsync(AppDbContext db, CancellationToken ct = default)
+    public static async Task SeedAsync(AppDbContext db, CancellationToken ct = default)
     {
-        if (await db.Seferler.AnyAsync(ct)) return;
+        if (await db.Trips.AnyAsync(ct)) return;
 
-        var bugun = DateTime.UtcNow.Date;
-        for (var gun = 0; gun < 14; gun++)
-            foreach (var h in Hatlar)
-                db.Seferler.Add(new Sefer
+        var today = DateTime.UtcNow.Date;
+        for (var day = 0; day < 14; day++)
+            foreach (var r in Routes)
+                db.Trips.Add(new Trip
                 {
-                    Firma = h.Firma,
-                    Kalkis = h.Kalkis,
-                    Varis = h.Varis,
-                    KalkisZamani = bugun.AddDays(gun).AddHours(h.Saat),
-                    Fiyat = h.Fiyat,
-                    KoltukSayisi = 40
+                    Company = r.Company,
+                    Origin = r.Origin,
+                    Destination = r.Destination,
+                    DepartureTime = today.AddDays(day).AddHours(r.Hour),
+                    Price = r.Price,
+                    SeatCount = 40
                 });
 
         await db.SaveChangesAsync(ct);

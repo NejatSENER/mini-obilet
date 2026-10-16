@@ -1,68 +1,71 @@
 # Mini Obilet API
 
-Otobüs bileti satışının çekirdeği: sefer arama, koltuk haritası, bilet alma ve iptal. Asıl odak, **aynı koltuğun iki kez satılmasını önlemek** ve uygulamayı **Azure'a kod olarak tanımlanmış altyapı ve şifresiz bir CI/CD hattıyla** yayınlamak.
+The core of a bus ticketing service: trip search, seat map, buying and cancelling tickets. The focus is on **never selling the same seat twice** and on shipping the app to **Azure with infrastructure as code and a passwordless CI/CD pipeline**.
 
-## Mimari
+**Live:** https://miniobilet-api-sj6smn.azurewebsites.net/api/v1/status
+
+## Architecture
 
 ```mermaid
 flowchart LR
-    GH[GitHub Actions<br/>build · test · deploy] -- "OIDC (şifresiz)" --> APP
-    U[İstemci] -- HTTPS --> APP[App Service<br/>ASP.NET Core 10 API]
+    GH[GitHub Actions<br/>build · test · approve · deploy] -- "OIDC (no stored secrets)" --> APP
+    U[Client] -- HTTPS --> APP[App Service<br/>ASP.NET Core 10 API]
     APP -- "Managed Identity" --> SQL[(Azure SQL)]
     APP -- "Managed Identity" --> KV[Key Vault]
     APP -- "OpenTelemetry" --> AI[Application Insights]
-    AI --> AL[Hata alarmı]
+    AI --> AL[Failed request alert]
 ```
 
-Bütün Azure kaynakları `infra/main.bicep` ile tek komutla oluşturulur. Kodda, config'te ve GitHub'da **hiç şifre yok**:
-- Uygulama SQL'e ve Key Vault'a **Managed Identity** ile bağlanır.
-- SQL Server **sadece Entra kimlik doğrulaması** kabul eder. Demo sadeliği için Entra yöneticisi uygulamanın kendi kimliği (gerçek ortamda bir Entra grubu olur, uygulamaya sadece gereken roller verilir).
-- GitHub Actions Azure'a **federated credential (OIDC)** ile girer. GitHub'da sadece gizli olmayan id'ler (değişken) tutulur.
+All Azure resources are created by `infra/main.bicep` in a single deployment. There are **no passwords** in code, config or GitHub:
+- The app reaches SQL and Key Vault with its **Managed Identity**.
+- Azure SQL accepts **Entra authentication only**. To keep the demo simple, the Entra admin is the app's own identity. In production it would be an Entra group, with the app granted only the roles it needs.
+- GitHub Actions signs in to Azure with a **federated credential (OIDC)**. GitHub only stores non-secret ids as variables.
 
 ## API
 
-| Metot | Yol | Açıklama |
+| Method | Path | Description |
 |---|---|---|
-| GET | `/api/v1/seferler?kalkis=İstanbul&varis=Ankara&tarih=2026-10-20` | Sefer arama, boş koltuk sayısıyla |
-| GET | `/api/v1/seferler/{id}/koltuklar` | Koltuk haritası |
-| POST | `/api/v1/biletler` | Bilet al. `201`, dolu koltukta `409` |
-| GET | `/api/v1/biletler/{pnr}?eposta=...` | Bilet sorgula (PNR + e-posta eşleşmeli) |
-| DELETE | `/api/v1/biletler/{pnr}?eposta=...` | İptal (idempotent, `204`) |
-| GET | `/health` | Veritabanı dahil sağlık kontrolü |
-| GET | `/api/v1/durum` | Ortam, veritabanı, Key Vault ve izleme durumu |
-| GET | `/openapi/v1.json` | OpenAPI tanımı |
+| GET | `/api/v1/trips?origin=İstanbul&destination=Ankara&date=2026-10-20` | Search trips with available seat counts |
+| GET | `/api/v1/trips/{id}/seats` | Seat map |
+| POST | `/api/v1/tickets` | Buy a ticket. `201`, or `409` if the seat is taken |
+| GET | `/api/v1/tickets/{pnr}?email=...` | Get a ticket (PNR and email must match) |
+| DELETE | `/api/v1/tickets/{pnr}?email=...` | Cancel (idempotent, `204`) |
+| GET | `/health` | Health check including the database |
+| GET | `/api/v1/status` | Environment, database, Key Vault and monitoring status |
+| GET | `/openapi/v1.json` | OpenAPI document |
 
-## Tasarım kararları
+## Design decisions
 
-| Konu | Karar | Neden |
+| Topic | Decision | Why |
 |---|---|---|
-| Çift satış | `(SeferId, KoltukNo)` üzerinde **filtreli unique index** (`WHERE Iptal = 0`) | Uygulamadaki kontrol iki eşzamanlı isteği ayıramaz, veritabanı ayırır. İkinci istek `DbUpdateException` alır, `409` döner. İptal edilen koltuk tekrar satılabilir |
-| Erişim kontrolü | Bilet sorgu ve iptalde PNR + e-posta | Sadece PNR ile başkasının biletine erişilmesini (IDOR) önler |
-| Okuma sorguları | `AsNoTracking` + `Select` ile DTO projeksiyonu | N+1 yok, sadece gereken kolonlar |
-| Geçici hatalar | `EnableRetryOnFailure` | Azure SQL'de bağlantı kopmalarına karşı |
-| Migration | Açılışta `Migrate()`, pipeline idempotent script'i artifact olarak üretir | Tek instance için basit. Çok instance'ta script pipeline'da, deploy'dan önce çalıştırılmalı |
-| Test | `WebApplicationFactory` + SQLite, eşzamanlılık testi dahil (10 istek → 1 × 201, 9 × 409) | Gerçek HTTP pipeline'ı üzerinden uçtan uca |
+| Double booking | **Filtered unique index** on `(TripId, SeatNumber)` where `IsCancelled = 0` | An application-level check cannot separate two concurrent requests, and a `lock` only works inside one server. The database can. The second insert fails with `DbUpdateException` and the API returns `409`. Cancelled seats can be sold again |
+| Access control | PNR **and** email required to read or cancel a ticket | Prevents reading someone else's ticket by guessing a PNR (IDOR). Returns `404`, not `403`, so it does not leak existence |
+| Read queries | `AsNoTracking` + `Select` projection into DTOs | No N+1, only the needed columns |
+| Transient faults | `EnableRetryOnFailure` | Connection drops on Azure SQL |
+| Migrations | Applied on startup; the pipeline also produces an idempotent script as an artifact | Simple for a single instance. With multiple instances the script should run in the pipeline before deployment |
+| Tests | `WebApplicationFactory` + SQLite, including a concurrency test (10 requests → 1 × `201`, 9 × `409`) | End to end through the real HTTP pipeline |
 
-## Lokal çalıştırma
+## Run locally
 
 ```bash
-dotnet run --project src/MiniObilet.Api     # SQLite ile, örnek seferler otomatik yüklenir
+dotnet run --project src/MiniObilet.Api     # SQLite, sample trips are seeded automatically
 dotnet test
 ```
 
-## Azure'a kurulum
+## Deploy to Azure
 
 ```bash
 az login
-az group create -n rg-miniobilet-se -l swedencentral   # yeni ücretsiz hesaplarda bazı bölgelerde App Service kotası 0
-az deployment group create -g rg-miniobilet-se -f infra/main.bicep -p githubRepo=<kullanıcı>/mini-obilet \
-  githubSubject="repo:<kullanıcı>@<kullanıcıId>/mini-obilet@<repoId>:environment:production"   # yeni repolarda GitHub id'leri ekliyor
+az group create -n rg-miniobilet-se -l swedencentral   # new free subscriptions may have 0 App Service quota in some regions
+az deployment group create -g rg-miniobilet-se -f infra/main.bicep -p githubRepo=<owner>/mini-obilet \
+  githubSubject="repo:<owner>@<ownerId>/mini-obilet@<repoId>:environment:production"   # new repos include GitHub ids
 ```
 
-GitHub deposunda `production` ortamı ve şu değişkenler tanımlanır (çıktılardan): `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_WEBAPP_NAME`. `main`'e her push build, test, deploy ve `/health` smoke testini çalıştırır.
+Then create a `production` environment in the GitHub repository and set these variables from the deployment outputs: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_WEBAPP_NAME`. Every push to `main` runs build, tests, an approval gate, the deployment and a `/health` smoke test.
 
-## Bilinen sınırlar
+## Known limitations
 
-- Ücretsiz App Service katmanında deployment slot ve autoscale yok. Ücretli katmanda staging slot'a deploy edip swap yapılmalı.
-- Koltuk ödeme süresince tutulmuyor (hold). Gerçek sistemde TTL'li bir rezervasyon kaydı gerekir.
-- Kimlik doğrulama yok. Gerçek sistemde JWT/OIDC ile kullanıcı hesabı.
+- The free App Service tier has no deployment slots or autoscale. On a paid tier the pipeline should deploy to a staging slot and swap.
+- Seats are not held during payment. A real system needs a reservation with a TTL.
+- No user authentication. A real system would use JWT/OIDC user accounts.
+- Tests run on SQLite. Running them against SQL Server with Testcontainers would catch provider differences.

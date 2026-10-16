@@ -6,135 +6,135 @@ using MiniObilet.Api;
 
 namespace MiniObilet.Tests;
 
-public class TestUygulamasi : WebApplicationFactory<Program>
+public class TestApp : WebApplicationFactory<Program>
 {
-    private readonly string _dbYolu = Path.Combine(Path.GetTempPath(), $"miniobilet-test-{Guid.NewGuid():N}.db");
+    private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"miniobilet-test-{Guid.NewGuid():N}.db");
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
         builder.UseSetting("Db:Provider", "Sqlite");
-        builder.UseSetting("ConnectionStrings:Db", $"Data Source={_dbYolu}");
+        builder.UseSetting("ConnectionStrings:Db", $"Data Source={_dbPath}");
     }
 
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
         Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
-        if (File.Exists(_dbYolu)) File.Delete(_dbYolu);
+        if (File.Exists(_dbPath)) File.Delete(_dbPath);
     }
 }
 
-public class ApiTests(TestUygulamasi uygulama) : IClassFixture<TestUygulamasi>
+public class ApiTests(TestApp app) : IClassFixture<TestApp>
 {
-    private readonly HttpClient _client = uygulama.CreateClient();
-    private static readonly string Yarin = DateTime.UtcNow.Date.AddDays(1).ToString("yyyy-MM-dd");
+    private readonly HttpClient _client = app.CreateClient();
+    private static readonly string Tomorrow = DateTime.UtcNow.Date.AddDays(1).ToString("yyyy-MM-dd");
 
-    private async Task<SeferOzetDto> IlkSeferAsync(string kalkis = "İstanbul", string varis = "Ankara", int gunSonra = 1)
+    private async Task<TripSummaryDto> FirstTripAsync(int daysAhead, string origin = "İstanbul", string destination = "Ankara")
     {
-        var tarih = DateTime.UtcNow.Date.AddDays(gunSonra).ToString("yyyy-MM-dd");
-        var seferler = await _client.GetFromJsonAsync<List<SeferOzetDto>>($"/api/v1/seferler?kalkis={kalkis}&varis={varis}&tarih={tarih}");
-        return seferler!.First();
+        var date = DateTime.UtcNow.Date.AddDays(daysAhead).ToString("yyyy-MM-dd");
+        var trips = await _client.GetFromJsonAsync<List<TripSummaryDto>>($"/api/v1/trips?origin={origin}&destination={destination}&date={date}");
+        return trips!.First();
     }
 
-    private Task<HttpResponseMessage> BiletAlAsync(int seferId, int koltukNo, string eposta = "yolcu@ornek.com") =>
-        _client.PostAsJsonAsync("/api/v1/biletler", new BiletIstegi(seferId, koltukNo, "Test Yolcu", eposta));
+    private Task<HttpResponseMessage> BuyTicketAsync(int tripId, int seatNumber, string email = "passenger@example.com") =>
+        _client.PostAsJsonAsync("/api/v1/tickets", new TicketRequest(tripId, seatNumber, "Test Passenger", email));
 
     [Fact]
-    public async Task SeferAra_GecerliRota_SeferleriVeBosKoltuklariDoner()
+    public async Task SearchTrips_ValidRoute_ReturnsTripsWithAvailableSeats()
     {
-        var seferler = await _client.GetFromJsonAsync<List<SeferOzetDto>>($"/api/v1/seferler?kalkis=İstanbul&varis=İzmir&tarih={Yarin}");
+        var trips = await _client.GetFromJsonAsync<List<TripSummaryDto>>($"/api/v1/trips?origin=İstanbul&destination=İzmir&date={Tomorrow}");
 
-        Assert.NotNull(seferler);
-        Assert.Equal(2, seferler.Count);
-        Assert.All(seferler, s => Assert.Equal(40, s.BosKoltuk));
-        Assert.True(seferler[0].KalkisZamani < seferler[1].KalkisZamani);
-    }
-
-    [Fact]
-    public async Task SeferAra_KalkisEksik_400Doner()
-    {
-        var yanit = await _client.GetAsync($"/api/v1/seferler?varis=Ankara&tarih={Yarin}");
-        Assert.Equal(HttpStatusCode.BadRequest, yanit.StatusCode);
+        Assert.NotNull(trips);
+        Assert.Equal(2, trips.Count);
+        Assert.All(trips, t => Assert.Equal(40, t.AvailableSeats));
+        Assert.True(trips[0].DepartureTime < trips[1].DepartureTime);
     }
 
     [Fact]
-    public async Task BiletAl_Basarili_201VeKoltukDoluGorunur()
+    public async Task SearchTrips_MissingOrigin_Returns400()
     {
-        var sefer = await IlkSeferAsync(gunSonra: 2);
-
-        var yanit = await BiletAlAsync(sefer.Id, 5);
-
-        Assert.Equal(HttpStatusCode.Created, yanit.StatusCode);
-        Assert.NotNull(yanit.Headers.Location);
-        var harita = await _client.GetFromJsonAsync<KoltukHaritasiDto>($"/api/v1/seferler/{sefer.Id}/koltuklar");
-        Assert.True(harita!.Koltuklar.Single(k => k.No == 5).Dolu);
-        Assert.False(harita.Koltuklar.Single(k => k.No == 6).Dolu);
+        var response = await _client.GetAsync($"/api/v1/trips?destination=Ankara&date={Tomorrow}");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]
-    public async Task BiletAl_AyniKoltukIkinciKez_409Doner()
+    public async Task BuyTicket_Success_Returns201AndSeatIsTaken()
     {
-        var sefer = await IlkSeferAsync(gunSonra: 3);
-        await BiletAlAsync(sefer.Id, 10);
+        var trip = await FirstTripAsync(daysAhead: 2);
 
-        var ikinci = await BiletAlAsync(sefer.Id, 10, "baskasi@ornek.com");
+        var response = await BuyTicketAsync(trip.Id, 5);
 
-        Assert.Equal(HttpStatusCode.Conflict, ikinci.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.NotNull(response.Headers.Location);
+        var map = await _client.GetFromJsonAsync<SeatMapDto>($"/api/v1/trips/{trip.Id}/seats");
+        Assert.True(map!.Seats.Single(s => s.Number == 5).IsTaken);
+        Assert.False(map.Seats.Single(s => s.Number == 6).IsTaken);
     }
 
     [Fact]
-    public async Task BiletAl_AyniKoltugaEsZamanli10Istek_SadeceBiriBasarili()
+    public async Task BuyTicket_SameSeatTwice_Returns409()
     {
-        var sefer = await IlkSeferAsync(gunSonra: 4);
+        var trip = await FirstTripAsync(daysAhead: 3);
+        await BuyTicketAsync(trip.Id, 10);
 
-        var yanitlar = await Task.WhenAll(Enumerable.Range(0, 10)
-            .Select(i => BiletAlAsync(sefer.Id, 14, $"yolcu{i}@ornek.com")));
+        var second = await BuyTicketAsync(trip.Id, 10, "other@example.com");
 
-        Assert.Equal(1, yanitlar.Count(y => y.StatusCode == HttpStatusCode.Created));
-        Assert.Equal(9, yanitlar.Count(y => y.StatusCode == HttpStatusCode.Conflict));
+        Assert.Equal(HttpStatusCode.Conflict, second.StatusCode);
     }
 
     [Fact]
-    public async Task BiletIptal_SonrasindaKoltukTekrarSatilabilir()
+    public async Task BuyTicket_TenConcurrentRequestsForSameSeat_OnlyOneSucceeds()
     {
-        var sefer = await IlkSeferAsync(gunSonra: 5);
-        var bilet = await (await BiletAlAsync(sefer.Id, 20, "iptal@ornek.com")).Content.ReadFromJsonAsync<BiletDto>();
+        var trip = await FirstTripAsync(daysAhead: 4);
 
-        var iptal = await _client.DeleteAsync($"/api/v1/biletler/{bilet!.Pnr}?eposta=iptal@ornek.com");
-        var yeniden = await BiletAlAsync(sefer.Id, 20, "yeni@ornek.com");
+        var responses = await Task.WhenAll(Enumerable.Range(0, 10)
+            .Select(i => BuyTicketAsync(trip.Id, 14, $"passenger{i}@example.com")));
 
-        Assert.Equal(HttpStatusCode.NoContent, iptal.StatusCode);
-        Assert.Equal(HttpStatusCode.Created, yeniden.StatusCode);
+        Assert.Equal(1, responses.Count(r => r.StatusCode == HttpStatusCode.Created));
+        Assert.Equal(9, responses.Count(r => r.StatusCode == HttpStatusCode.Conflict));
     }
 
     [Fact]
-    public async Task BiletGetir_YanlisEposta_404Doner()
+    public async Task CancelTicket_SeatCanBeSoldAgain()
     {
-        var sefer = await IlkSeferAsync(gunSonra: 6);
-        var bilet = await (await BiletAlAsync(sefer.Id, 1, "sahibi@ornek.com")).Content.ReadFromJsonAsync<BiletDto>();
+        var trip = await FirstTripAsync(daysAhead: 5);
+        var ticket = await (await BuyTicketAsync(trip.Id, 20, "cancel@example.com")).Content.ReadFromJsonAsync<TicketDto>();
 
-        var dogru = await _client.GetAsync($"/api/v1/biletler/{bilet!.Pnr}?eposta=sahibi@ornek.com");
-        var yanlis = await _client.GetAsync($"/api/v1/biletler/{bilet.Pnr}?eposta=baskasi@ornek.com");
+        var cancel = await _client.DeleteAsync($"/api/v1/tickets/{ticket!.Pnr}?email=cancel@example.com");
+        var resold = await BuyTicketAsync(trip.Id, 20, "new@example.com");
 
-        Assert.Equal(HttpStatusCode.OK, dogru.StatusCode);
-        Assert.Equal(HttpStatusCode.NotFound, yanlis.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, cancel.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, resold.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetTicket_WrongEmail_Returns404()
+    {
+        var trip = await FirstTripAsync(daysAhead: 6);
+        var ticket = await (await BuyTicketAsync(trip.Id, 1, "owner@example.com")).Content.ReadFromJsonAsync<TicketDto>();
+
+        var owner = await _client.GetAsync($"/api/v1/tickets/{ticket!.Pnr}?email=owner@example.com");
+        var stranger = await _client.GetAsync($"/api/v1/tickets/{ticket.Pnr}?email=stranger@example.com");
+
+        Assert.Equal(HttpStatusCode.OK, owner.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, stranger.StatusCode);
     }
 
     [Theory]
     [InlineData(0)]
     [InlineData(41)]
-    public async Task BiletAl_GecersizKoltukNo_400Doner(int koltukNo)
+    public async Task BuyTicket_InvalidSeatNumber_Returns400(int seatNumber)
     {
-        var sefer = await IlkSeferAsync(gunSonra: 7);
-        var yanit = await BiletAlAsync(sefer.Id, koltukNo);
-        Assert.Equal(HttpStatusCode.BadRequest, yanit.StatusCode);
+        var trip = await FirstTripAsync(daysAhead: 7);
+        var response = await BuyTicketAsync(trip.Id, seatNumber);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     [Fact]
-    public async Task Health_VeritabaniErisilebilir_200Doner()
+    public async Task Health_DatabaseReachable_Returns200()
     {
-        var yanit = await _client.GetAsync("/health");
-        Assert.Equal(HttpStatusCode.OK, yanit.StatusCode);
+        var response = await _client.GetAsync("/health");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 }

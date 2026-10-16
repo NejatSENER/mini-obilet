@@ -1,40 +1,40 @@
-// Mini Obilet altyapısı: tek komutla bütün Azure kaynakları
-// az deployment group create -g rg-miniobilet -f infra/main.bicep -p githubRepo=...
+// Mini Obilet infrastructure: every Azure resource in one deployment
+// az deployment group create -g rg-miniobilet-se -f infra/main.bicep -p githubRepo=... githubSubject=...
 
-@description('Kaynakların bölgesi')
+@description('Region for all resources')
 param location string = resourceGroup().location
 
-@description('Kaynak adlarının ön eki')
-param ad string = 'miniobilet'
+@description('Resource name prefix')
+param prefix string = 'miniobilet'
 
-@description('GitHub deposu, ör. NejatSENER/mini-obilet (şifresiz deploy için)')
+@description('GitHub repository, e.g. NejatSENER/mini-obilet')
 param githubRepo string
 
-@description('GitHub OIDC subject. Yeni repolarda GitHub id\'leri de ekliyor: repo:sahip@id/repo@id:environment:production')
+@description('GitHub OIDC subject. New repos include owner and repo ids: repo:owner@id/repo@id:environment:production')
 param githubSubject string = 'repo:${githubRepo}:environment:production'
 
-@description('Azure SQL ücretsiz teklifini kullan (abonelik başına bir kez)')
-param ucretsizSql bool = true
+@description('Use the Azure SQL free offer (one per subscription)')
+param useFreeSqlOffer bool = true
 
-@description('App Service .NET sürümü')
+@description('App Service .NET runtime')
 param linuxFxVersion string = 'DOTNETCORE|10.0'
 
-@description('Alarm e-postası (boş bırakılırsa e-posta gönderilmez)')
-param alarmEposta string = ''
+@description('Alert email (no email notification when empty)')
+param alertEmail string = ''
 
 @secure()
-@description('Örnek sır: ödeme sağlayıcısı API anahtarı (Key Vault\'a yazılır)')
-param odemeApiKey string = newGuid()
+@description('Sample secret: payment provider API key, stored in Key Vault')
+param paymentApiKey string = newGuid()
 
-var ek = take(uniqueString(resourceGroup().id), 6)
-var webAdi = '${ad}-api-${ek}'
-var dbAdi = 'miniobilet'
-var sqlAdi = '${ad}-sql-${ek}'
-var sqlFqdn = '${sqlAdi}${environment().suffixes.sqlServerHostname}'   // web <-> sql döngüsel bağımlılığını önler
+var suffix = take(uniqueString(resourceGroup().id), 6)
+var webAppName = '${prefix}-api-${suffix}'
+var dbName = 'miniobilet'
+var sqlServerName = '${prefix}-sql-${suffix}'
+var sqlFqdn = '${sqlServerName}${environment().suffixes.sqlServerHostname}'   // avoids a web <-> sql dependency cycle
 
-// ---------- İzleme ----------
+// ---------- Monitoring ----------
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
-  name: '${ad}-log-${ek}'
+  name: '${prefix}-log-${suffix}'
   location: location
   properties: {
     sku: { name: 'PerGB2018' }
@@ -43,7 +43,7 @@ resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2023-09-01' = {
 }
 
 resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
-  name: '${ad}-ai-${ek}'
+  name: '${prefix}-ai-${suffix}'
   location: location
   kind: 'web'
   properties: {
@@ -52,9 +52,9 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   }
 }
 
-// ---------- Uygulama ----------
+// ---------- App ----------
 resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
-  name: '${ad}-plan-${ek}'
+  name: '${prefix}-plan-${suffix}'
   location: location
   kind: 'linux'
   sku: { name: 'F1', tier: 'Free' }
@@ -62,9 +62,9 @@ resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
 }
 
 resource web 'Microsoft.Web/sites@2023-12-01' = {
-  name: webAdi
+  name: webAppName
   location: location
-  identity: { type: 'SystemAssigned' }   // Managed Identity: SQL ve Key Vault'a şifresiz erişim
+  identity: { type: 'SystemAssigned' }   // passwordless access to SQL and Key Vault
   properties: {
     serverFarmId: plan.id
     httpsOnly: true
@@ -76,7 +76,7 @@ resource web 'Microsoft.Web/sites@2023-12-01' = {
       appSettings: [
         { name: 'ASPNETCORE_ENVIRONMENT', value: 'Production' }
         { name: 'Db__Provider', value: 'SqlServer' }
-        { name: 'ConnectionStrings__Db', value: 'Server=tcp:${sqlFqdn},1433;Database=${dbAdi};Authentication=Active Directory Default;Encrypt=True;' }
+        { name: 'ConnectionStrings__Db', value: 'Server=tcp:${sqlFqdn},1433;Database=${dbName};Authentication=Active Directory Default;Encrypt=True;' }
         { name: 'KeyVault__Uri', value: keyVault.properties.vaultUri }
         { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
       ]
@@ -84,27 +84,27 @@ resource web 'Microsoft.Web/sites@2023-12-01' = {
   }
 }
 
-// ---------- Veritabanı ----------
+// ---------- Database ----------
 resource sql 'Microsoft.Sql/servers@2023-08-01-preview' = {
-  name: sqlAdi
+  name: sqlServerName
   location: location
   properties: {
     minimalTlsVersion: '1.2'
     publicNetworkAccess: 'Enabled'
-    // Demo sadeliği: uygulamanın Managed Identity'si Entra yöneticisi (şema migration'ı da yapabilsin).
-    // Gerçek ortamda yönetici bir Entra grubu olur, uygulamaya sadece gereken roller verilir.
+    // Demo simplification: the app's identity is the Entra admin so it can run migrations.
+    // In production the admin is an Entra group and the app only gets the roles it needs.
     administrators: {
       administratorType: 'ActiveDirectory'
       login: web.name
       sid: web.identity.principalId
       tenantId: subscription().tenantId
       principalType: 'Application'
-      azureADOnlyAuthentication: true   // SQL şifresi yok, sadece Entra kimlikleri
+      azureADOnlyAuthentication: true   // no SQL passwords, Entra identities only
     }
   }
 }
 
-resource sqlAzureErisimi 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
+resource sqlAllowAzure 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
   parent: sql
   name: 'AllowAllWindowsAzureIps'
   properties: { startIpAddress: '0.0.0.0', endIpAddress: '0.0.0.0' }
@@ -112,15 +112,15 @@ resource sqlAzureErisimi 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview
 
 resource db 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
   parent: sql
-  name: dbAdi
+  name: dbName
   location: location
-  sku: ucretsizSql
+  sku: useFreeSqlOffer
     ? { name: 'GP_S_Gen5', tier: 'GeneralPurpose', family: 'Gen5', capacity: 2 }
     : { name: 'Basic', tier: 'Basic' }
-  properties: ucretsizSql
+  properties: useFreeSqlOffer
     ? {
         useFreeLimit: true
-        freeLimitExhaustionBehavior: 'AutoPause'   // ücretsiz kota bitince para yazmak yerine durakla
+        freeLimitExhaustionBehavior: 'AutoPause'   // pause instead of billing when the free limit runs out
         autoPauseDelay: 60
         minCapacity: json('0.5')
         requestedBackupStorageRedundancy: 'Local'
@@ -130,9 +130,9 @@ resource db 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
       }
 }
 
-// ---------- Sırlar ----------
+// ---------- Secrets ----------
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
-  name: '${ad}-kv-${ek}'
+  name: '${prefix}-kv-${suffix}'
   location: location
   properties: {
     tenantId: subscription().tenantId
@@ -142,14 +142,14 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-resource odemeSirri 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+resource paymentSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   parent: keyVault
-  name: 'OdemeSaglayici--ApiKey'   // config'te OdemeSaglayici:ApiKey olarak okunur
-  properties: { value: odemeApiKey }
+  name: 'PaymentProvider--ApiKey'   // read as PaymentProvider:ApiKey
+  properties: { value: paymentApiKey }
 }
 
 var keyVaultSecretsUser = '4633458b-17de-408a-b874-0445c86b69e6'
-resource webKeyVaultYetkisi 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource webKeyVaultAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: keyVault
   name: guid(keyVault.id, web.id, keyVaultSecretsUser)
   properties: {
@@ -159,45 +159,45 @@ resource webKeyVaultYetkisi 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
-// ---------- GitHub Actions için şifresiz deploy kimliği (OIDC) ----------
-resource githubKimligi 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: '${ad}-github-${ek}'
+// ---------- Passwordless deploy identity for GitHub Actions (OIDC) ----------
+resource githubIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${prefix}-github-${suffix}'
   location: location
 }
 
-resource githubGuveni 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = {
-  parent: githubKimligi
+resource githubTrust 'Microsoft.ManagedIdentity/userAssignedIdentities/federatedIdentityCredentials@2023-01-31' = {
+  parent: githubIdentity
   name: 'github-production'
   properties: {
     issuer: 'https://token.actions.githubusercontent.com'
-    subject: githubSubject   // sadece bu reponun production ortamı
+    subject: githubSubject   // only this repo's production environment
     audiences: [ 'api://AzureADTokenExchange' ]
   }
 }
 
 var websiteContributor = 'de139f84-1756-47ae-9be6-808fbbe84772'
-resource githubDeployYetkisi 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(resourceGroup().id, githubKimligi.id, websiteContributor)
+resource githubDeployAccess 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(resourceGroup().id, githubIdentity.id, websiteContributor)
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', websiteContributor)
-    principalId: githubKimligi.properties.principalId
+    principalId: githubIdentity.properties.principalId
     principalType: 'ServicePrincipal'
   }
 }
 
-// ---------- Alarm: 5 dakikada 5'ten fazla başarısız istek ----------
-resource aksiyonGrubu 'Microsoft.Insights/actionGroups@2023-01-01' = if (!empty(alarmEposta)) {
-  name: '${ad}-ag-${ek}'
+// ---------- Alert: more than 5 failed requests in 5 minutes ----------
+resource actionGroup 'Microsoft.Insights/actionGroups@2023-01-01' = if (!empty(alertEmail)) {
+  name: '${prefix}-ag-${suffix}'
   location: 'global'
   properties: {
     groupShortName: 'miniobilet'
     enabled: true
-    emailReceivers: [ { name: 'gelistirici', emailAddress: alarmEposta, useCommonAlertSchema: true } ]
+    emailReceivers: [ { name: 'developer', emailAddress: alertEmail, useCommonAlertSchema: true } ]
   }
 }
 
-resource hataAlarmi 'Microsoft.Insights/metricAlerts@2018-03-01' = {
-  name: '${ad}-hata-alarmi-${ek}'
+resource failedRequestsAlert 'Microsoft.Insights/metricAlerts@2018-03-01' = {
+  name: '${prefix}-failed-requests-${suffix}'
   location: 'global'
   properties: {
     severity: 2
@@ -209,7 +209,7 @@ resource hataAlarmi 'Microsoft.Insights/metricAlerts@2018-03-01' = {
       'odata.type': 'Microsoft.Azure.Monitor.SingleResourceMultipleMetricCriteria'
       allOf: [
         {
-          name: 'basarisiz-istekler'
+          name: 'failed-requests'
           criterionType: 'StaticThresholdCriterion'
           metricName: 'requests/failed'
           metricNamespace: 'microsoft.insights/components'
@@ -219,7 +219,7 @@ resource hataAlarmi 'Microsoft.Insights/metricAlerts@2018-03-01' = {
         }
       ]
     }
-    actions: empty(alarmEposta) ? [] : [ { actionGroupId: aksiyonGrubu.id } ]
+    actions: empty(alertEmail) ? [] : [ { actionGroupId: actionGroup.id } ]
   }
 }
 
@@ -227,8 +227,8 @@ output webAppName string = web.name
 output webAppUrl string = 'https://${web.properties.defaultHostName}'
 output sqlServerName string = sql.name
 output sqlServerFqdn string = sql.properties.fullyQualifiedDomainName
-output sqlDbName string = dbAdi
+output sqlDbName string = dbName
 output keyVaultName string = keyVault.name
-output githubClientId string = githubKimligi.properties.clientId
+output githubClientId string = githubIdentity.properties.clientId
 output tenantId string = subscription().tenantId
 output subscriptionId string = subscription().subscriptionId

@@ -12,8 +12,8 @@ using MiniObilet.Api.Data;
 namespace MiniObilet.Api.Data.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20261015231612_Ilk")]
-    partial class Ilk
+    [Migration("20261016115059_InitialCreate")]
+    partial class InitialCreate
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -25,7 +25,7 @@ namespace MiniObilet.Api.Data.Migrations
 
             SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
 
-            modelBuilder.Entity("MiniObilet.Api.Data.Bilet", b =>
+            modelBuilder.Entity("MiniObilet.Api.Data.Ticket", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -33,46 +33,46 @@ namespace MiniObilet.Api.Data.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<string>("Eposta")
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Email")
                         .IsRequired()
                         .HasMaxLength(200)
                         .HasColumnType("nvarchar(200)");
 
-                    b.Property<bool>("Iptal")
+                    b.Property<bool>("IsCancelled")
                         .HasColumnType("bit");
 
-                    b.Property<int>("KoltukNo")
-                        .HasColumnType("int");
-
-                    b.Property<DateTime>("OlusturmaZamani")
-                        .HasColumnType("datetime2");
+                    b.Property<string>("PassengerName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
 
                     b.Property<string>("Pnr")
                         .IsRequired()
                         .HasMaxLength(6)
                         .HasColumnType("nvarchar(6)");
 
-                    b.Property<int>("SeferId")
+                    b.Property<int>("SeatNumber")
                         .HasColumnType("int");
 
-                    b.Property<string>("YolcuAdi")
-                        .IsRequired()
-                        .HasMaxLength(100)
-                        .HasColumnType("nvarchar(100)");
+                    b.Property<int>("TripId")
+                        .HasColumnType("int");
 
                     b.HasKey("Id");
 
                     b.HasIndex("Pnr")
                         .IsUnique();
 
-                    b.HasIndex("SeferId", "KoltukNo")
+                    b.HasIndex("TripId", "SeatNumber")
                         .IsUnique()
-                        .HasFilter("[Iptal] = 0");
+                        .HasFilter("[IsCancelled] = 0");
 
-                    b.ToTable("Biletler");
+                    b.ToTable("Tickets");
                 });
 
-            modelBuilder.Entity("MiniObilet.Api.Data.Sefer", b =>
+            modelBuilder.Entity("MiniObilet.Api.Data.Trip", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -80,52 +80,52 @@ namespace MiniObilet.Api.Data.Migrations
 
                     SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<int>("Id"));
 
-                    b.Property<string>("Firma")
+                    b.Property<string>("Company")
                         .IsRequired()
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
 
-                    b.Property<decimal>("Fiyat")
+                    b.Property<DateTime>("DepartureTime")
+                        .HasColumnType("datetime2");
+
+                    b.Property<string>("Destination")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<string>("Origin")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("nvarchar(50)");
+
+                    b.Property<decimal>("Price")
                         .HasPrecision(10, 2)
                         .HasColumnType("decimal(10,2)");
 
-                    b.Property<string>("Kalkis")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
-
-                    b.Property<DateTime>("KalkisZamani")
-                        .HasColumnType("datetime2");
-
-                    b.Property<int>("KoltukSayisi")
+                    b.Property<int>("SeatCount")
                         .HasColumnType("int");
-
-                    b.Property<string>("Varis")
-                        .IsRequired()
-                        .HasMaxLength(50)
-                        .HasColumnType("nvarchar(50)");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("Kalkis", "Varis", "KalkisZamani");
+                    b.HasIndex("Origin", "Destination", "DepartureTime");
 
-                    b.ToTable("Seferler");
+                    b.ToTable("Trips");
                 });
 
-            modelBuilder.Entity("MiniObilet.Api.Data.Bilet", b =>
+            modelBuilder.Entity("MiniObilet.Api.Data.Ticket", b =>
                 {
-                    b.HasOne("MiniObilet.Api.Data.Sefer", "Sefer")
-                        .WithMany("Biletler")
-                        .HasForeignKey("SeferId")
+                    b.HasOne("MiniObilet.Api.Data.Trip", "Trip")
+                        .WithMany("Tickets")
+                        .HasForeignKey("TripId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
-                    b.Navigation("Sefer");
+                    b.Navigation("Trip");
                 });
 
-            modelBuilder.Entity("MiniObilet.Api.Data.Sefer", b =>
+            modelBuilder.Entity("MiniObilet.Api.Data.Trip", b =>
                 {
-                    b.Navigation("Biletler");
+                    b.Navigation("Tickets");
                 });
 #pragma warning restore 612, 618
         }
