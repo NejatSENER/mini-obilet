@@ -18,7 +18,7 @@ flowchart LR
 
 All Azure resources are created by `infra/main.bicep` in a single deployment. There are **no passwords** in code, config or GitHub:
 - The app reaches SQL and Key Vault with its **Managed Identity**.
-- Azure SQL accepts **Entra authentication only**. To keep the demo simple, the Entra admin is the app's own identity. In production it would be an Entra group, with the app granted only the roles it needs.
+- Azure SQL accepts **Entra authentication only**. The admin is an Entra group (`miniobilet-sql-admins`). The app has its own database user with only `db_datareader`, `db_datawriter` and `db_ddladmin` (`infra/sql-app-user.sql`).
 - GitHub Actions signs in to Azure with a **federated credential (OIDC)**. GitHub only stores non-secret ids as variables.
 
 ## API
@@ -59,6 +59,11 @@ az login
 az group create -n rg-miniobilet-se -l swedencentral   # new free subscriptions may have 0 App Service quota in some regions
 az deployment group create -g rg-miniobilet-se -f infra/main.bicep -p githubRepo=<owner>/mini-obilet \
   githubSubject="repo:<owner>@<ownerId>/mini-obilet@<repoId>:environment:production"   # new repos include GitHub ids
+
+# Optional: make an Entra group the SQL admin and give the app a least-privilege user
+az ad group create --display-name miniobilet-sql-admins --mail-nickname miniobilet-sql-admins
+az deployment group create ... -p sqlAdminGroupName=miniobilet-sql-admins sqlAdminGroupObjectId=<groupId>
+sqlcmd -S <sqlServerFqdn> -d miniobilet --authentication-method ActiveDirectoryAzCli -v WebAppName=<webAppName> -i infra/sql-app-user.sql
 ```
 
 Then create a `production` environment in the GitHub repository and set these variables from the deployment outputs: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_WEBAPP_NAME`. Every push to `main` runs build, tests, an approval gate, the deployment and a `/health` smoke test.

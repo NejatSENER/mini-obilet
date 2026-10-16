@@ -13,6 +13,12 @@ param githubRepo string
 @description('GitHub OIDC subject. New repos include owner and repo ids: repo:owner@id/repo@id:environment:production')
 param githubSubject string = 'repo:${githubRepo}:environment:production'
 
+@description('Entra group that administers SQL (empty: the app identity is admin)')
+param sqlAdminGroupName string = ''
+
+@description('Object id of the SQL admin group')
+param sqlAdminGroupObjectId string = ''
+
 @description('Use the Azure SQL free offer (one per subscription)')
 param useFreeSqlOffer bool = true
 
@@ -91,14 +97,14 @@ resource sql 'Microsoft.Sql/servers@2023-08-01-preview' = {
   properties: {
     minimalTlsVersion: '1.2'
     publicNetworkAccess: 'Enabled'
-    // Demo simplification: the app's identity is the Entra admin so it can run migrations.
-    // In production the admin is an Entra group and the app only gets the roles it needs.
+    // Admin is an Entra group; the app gets its own database user with limited roles (infra/sql-app-user.sql).
+    // Without a group (first deployment) the app identity is admin so it can run migrations.
     administrators: {
       administratorType: 'ActiveDirectory'
-      login: web.name
-      sid: web.identity.principalId
+      login: empty(sqlAdminGroupName) ? web.name : sqlAdminGroupName
+      sid: empty(sqlAdminGroupObjectId) ? web.identity.principalId : sqlAdminGroupObjectId
       tenantId: subscription().tenantId
-      principalType: 'Application'
+      principalType: empty(sqlAdminGroupObjectId) ? 'Application' : 'Group'
       azureADOnlyAuthentication: true   // no SQL passwords, Entra identities only
     }
   }
