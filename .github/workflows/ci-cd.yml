@@ -1,0 +1,86 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ve test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - run: dotnet restore
+      - run: dotnet build -c Release --no-restore -warnaserror
+      - run: dotnet test -c Release --no-build --logger "console;verbosity=normal"
+
+      - name: Publish
+        run: dotnet publish src/MiniObilet.Api -c Release --no-build -o publish
+
+      - name: Idempotent migration script'i (inceleme için)
+        run: |
+          dotnet tool restore
+          dotnet ef migrations script --idempotent --project src/MiniObilet.Api --configuration Release --no-build --output migrations.sql
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api
+          path: publish
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: migrations
+          path: migrations.sql
+
+  deploy:
+    name: Azure'a deploy
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.webapp-url }}
+    permissions:
+      id-token: write   # OIDC: Azure'a şifre saklamadan giriş
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: api
+          path: publish
+
+      - name: Azure'a giriş (OIDC, federated credential)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: App Service'e deploy
+        id: deploy
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          package: publish
+
+      - name: Smoke test (/health)
+        run: |
+          url="${{ steps.deploy.outputs.webapp-url }}/health"
+          for i in $(seq 1 20); do
+            kod=$(curl -s -o /dev/null -w "%{http_code}" "$url" || true)
+            echo "Deneme $i: $kod"
+            if [ "$kod" = "200" ]; then exit 0; fi
+            sleep 15
+          done
+          echo "Uygulama sağlıklı cevap vermedi"
+          exit 1

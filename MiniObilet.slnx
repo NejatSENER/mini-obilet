@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MiniObilet.Api/MiniObilet.Api.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MiniObilet.Tests/MiniObilet.Tests.csproj" />
+  </Folder>
+</Solution>
