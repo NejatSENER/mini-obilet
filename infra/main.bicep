@@ -10,6 +10,9 @@ param ad string = 'miniobilet'
 @description('GitHub deposu, ör. NejatSENER/mini-obilet (şifresiz deploy için)')
 param githubRepo string
 
+@description('GitHub OIDC subject. Yeni repolarda GitHub id\'leri de ekliyor: repo:sahip@id/repo@id:environment:production')
+param githubSubject string = 'repo:${githubRepo}:environment:production'
+
 @description('Azure SQL ücretsiz teklifini kullan (abonelik başına bir kez)')
 param ucretsizSql bool = true
 
@@ -167,7 +170,7 @@ resource githubGuveni 'Microsoft.ManagedIdentity/userAssignedIdentities/federate
   name: 'github-production'
   properties: {
     issuer: 'https://token.actions.githubusercontent.com'
-    subject: 'repo:${githubRepo}:environment:production'   // sadece bu reponun production ortamı
+    subject: githubSubject   // sadece bu reponun production ortamı
     audiences: [ 'api://AzureADTokenExchange' ]
   }
 }

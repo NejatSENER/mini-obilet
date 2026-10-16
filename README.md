@@ -55,7 +55,8 @@ dotnet test
 ```bash
 az login
 az group create -n rg-miniobilet-se -l swedencentral   # yeni ücretsiz hesaplarda bazı bölgelerde App Service kotası 0
-az deployment group create -g rg-miniobilet-se -f infra/main.bicep -p githubRepo=<kullanıcı>/mini-obilet
+az deployment group create -g rg-miniobilet-se -f infra/main.bicep -p githubRepo=<kullanıcı>/mini-obilet \
+  githubSubject="repo:<kullanıcı>@<kullanıcıId>/mini-obilet@<repoId>:environment:production"   # yeni repolarda GitHub id'leri ekliyor
 ```
 
 GitHub deposunda `production` ortamı ve şu değişkenler tanımlanır (çıktılardan): `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_WEBAPP_NAME`. `main`'e her push build, test, deploy ve `/health` smoke testini çalıştırır.
